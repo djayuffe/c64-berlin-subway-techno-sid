@@ -1,0 +1,150 @@
+--- /mnt/data/base18/mega/src/subway.s	2026-06-16 22:06:11.000000000 +0000
++++ /mnt/data/continue18/mega/src/subway.s	2026-06-16 22:11:10.529820385 +0000
+@@ -59,6 +59,8 @@
+ SID        = $d400
+ SID_V1FLO  = $d400
+ SID_V1FHI  = $d401
++SID_V1PWLO = $d402
++SID_V1PWHI = $d403
+ SID_V1CTL  = $d404
+ SID_V1AD   = $d405
+ SID_V1SR   = $d406
+@@ -3350,6 +3352,8 @@
+         lda #$1f : sta SID_MODEVOL     ; LP + max volume
+         lda #$08 : sta SID_V1AD         ; bass: instant attack, snappy decay
+         lda #$78 : sta SID_V1SR         ; sustain 7 -> body while held, short release
++        lda #$00 : sta SID_V1PWLO
++        lda #$08 : sta SID_V1PWHI
+         lda #$00 : sta SID_V2PWLO
+         lda #$08 : sta SID_V2PWHI
+         lda #$00 : sta SID_V2AD
+@@ -3409,6 +3413,13 @@
+         lda StyleResTbl,x      : sta SID_RESFLT
+         lda StyleVolTbl,x      : sta SID_MODEVOL
+         lda StyleXposeTbl,x    : sta musTranspose   ; per-track key -> 6 distinct tunes
++        lda StyleBassADTbl,x   : sta SID_V1AD
++        lda StyleBassSRTbl,x   : sta SID_V1SR
++        lda StyleArpADTbl,x    : sta SID_V2AD
++        lda StyleArpSRTbl,x    : sta SID_V2SR
++        lda StylePwmBaseTbl,x  : sta stylePwmBase
++        lda StylePwmStepTbl,x  : sta stylePwmStep
++        lda StyleFiltStepTbl,x : sta styleFiltStep
+         rts
+ 
+ ; MusXpose: A = note index -> + transpose, clamped into the 0..95 freq table
+@@ -3454,36 +3465,52 @@
+ TV_MusFilter:
+         lda TV_FiltPhase
+         clc
+-        adc #3
++        adc styleFiltStep       ; per-section filter LFO speed: slow dub -> fast peak
+         sta TV_FiltPhase
+-        bpl .tri
++        bpl MusFiltTri
+         eor #$ff
+-.tri:   lsr
++MusFiltTri:
++        lsr
+         lsr
+         ldx TV_MusRow
+         clc
+ pFilt:  adc MUS_FILT,x          ; operand patched by SelectStyle
++        bcc MusFiltNoSat
++        lda #$f0                ; do not wrap high cutoff back to mud/silence
++MusFiltNoSat:
++        cmp #$f1
++        bcc MusFiltStore
++        lda #$f0
++MusFiltStore:
+         sta SID_FCHI
+-        lda #0
++        lda TV_MusRow           ; animate low 3 cutoff bits for extra analogue fizz
++        and #$07
+         sta SID_FCLO
+         rts
+ 
+ TV_MusPwm:
+         lda TV_PwmPhase
+         clc
+-        adc #2
++        adc stylePwmStep        ; per-section PWM speed
+         sta TV_PwmPhase
+-        bpl .pw
++        bpl MusPwmTri
+         eor #$ff
+-.pw:    lsr
++MusPwmTri:
++        lsr
+         lsr
+         lsr
+         lsr
+         clc
+-        adc #$04
++        adc stylePwmBase        ; keep pulse away from 0/4095 mute edges
++        cmp #$0d
++        bcc MusPwmStore
++        lda #$0c
++MusPwmStore:
+         sta SID_V2PWHI
++        sta SID_V1PWHI          ; bass also breathes if pulse/combined wave is selected
+         lda #$00
+         sta SID_V2PWLO
++        sta SID_V1PWLO
+         rts
+ 
+ TV_DrumPitch:
+@@ -3534,15 +3561,20 @@
+ TV_MusRowTrigger:
+ pBass:  lda MUS_BASS,x
+         cmp #$ff
+-        beq .nobass
++        beq MusRowNoBass
+         jsr MusXpose
+         tay
+         lda SID_FREQLO,y : sta SID_V1FLO
+         lda SID_FREQHI,y : sta SID_V1FHI
+-        lda #$20         : sta SID_V1CTL
+-        lda styleBassWave : sta SID_V1CTL    ; per-style bass waveform
+-        lda #4 : jsr SndAdd                  ; bass note feeds the sound pulse
+-.nobass:
++        lda #$20         : sta SID_V1CTL      ; hard reset waveform for crisp techno gate
++        lda styleBassWave : sta SID_V1CTL     ; per-style bass waveform
++        lda #4 : jsr SndAdd                   ; bass note feeds the sound pulse
++        jmp MusRowAfterBass
++MusRowNoBass:
++        lda styleBassWave
++        and #$fe                              ; true staccato: rests release bass gate
++        sta SID_V1CTL
++MusRowAfterBass:
+ pDrum:  lda MUS_DRUM,x
+         beq .mdone
+         cmp #1
+@@ -4784,7 +4816,17 @@
+ StyleSpeedTbl:    !byte 6,   4,   5,5,   5,5,5,   3,3, 3,3
+ StyleResTbl:      !byte $c1, $31, $f1,$f1, $f3,$f3,$f7, $f1,$f1, $f1,$f1
+ StyleXposeTbl:    !byte 0,   0,   0,0,     0,0,0,   0,0, 0,0
+-StyleVolTbl:      !byte $1f, $1f, $1f,$1f, $1f,$1f,$1f, $1f,$1f, $1f,$1f
++StyleVolTbl:      !byte $1f, $1f, $1f,$1f, $1f,$3f,$5f, $1f,$1f, $1f,$1f
++; per-style SID programming: ADSR + PWM/filter LFO.  Active trip styles 2..6 use
++; progressively more real SID techno: saw/pulse bass, ringmod acid, hard-sync lead,
++; combined saw+pulse peak and higher resonance/filter movement.
++StyleBassADTbl:   !byte $08, $08, $08,$08, $06,$05,$04, $08,$08, $08,$08
++StyleBassSRTbl:   !byte $78, $78, $78,$68, $58,$78,$88, $78,$78, $78,$78
++StyleArpADTbl:    !byte $00, $00, $00,$00, $02,$04,$02, $00,$00, $00,$00
++StyleArpSRTbl:    !byte $f8, $f8, $48,$68, $78,$a8,$98, $f8,$f8, $f8,$f8
++StylePwmBaseTbl:  !byte $04, $04, $04,$04, $05,$04,$03, $04,$04, $04,$04
++StylePwmStepTbl:  !byte $02, $02, $02,$03, $04,$06,$07, $02,$02, $02,$02
++StyleFiltStepTbl: !byte $03, $03, $02,$03, $04,$06,$08, $03,$03, $03,$03
+ 
+ ; which style each of the 10 parts uses
+ ;             title mat rng pls hyp vor xor wav tun star
+@@ -4792,6 +4834,9 @@
+ 
+ styleBassWave: !byte $21
+ styleArpWave:  !byte $41
++stylePwmBase:  !byte $04
++stylePwmStep:  !byte $02
++styleFiltStep: !byte $03
+ 
+ 
+ ; ============================================================================
