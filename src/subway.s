@@ -6178,4 +6178,4 @@ MenuNamePalette: !byte $01,$07,$03,$0d   ; white, yellow, cyan, lt-green (menu n
 !if * > $c000 {
         !error "megademo overruns $c000! end = ", *
 }
-!warn "MEGADEMO end = ", *, "  (", * - $0801, " bytes)"
+; The hard $c000 boundary above remains the build-time size guard.
