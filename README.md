@@ -26,3 +26,7 @@ See [docs/FUNCTIONS.md](docs/FUNCTIONS.md) for the code map and `docs/history/TR
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+## Live VICE capture
+
+![Running C64 Berlin Subway Techno SID](assets/live-vice.png)
